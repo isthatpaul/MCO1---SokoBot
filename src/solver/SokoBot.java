@@ -97,7 +97,7 @@ public class SokoBot {
     /**
      * Heuristic: Sum of pattern database values for each box
      * Pattern database pre-computes minimum pushes to nearest goal
-     * This is admissible and provides strong guidance
+     * This is in fact admissible
      */
     private int calculateHeuristic() {
       int totalPushDistance = 0;
@@ -127,7 +127,7 @@ public class SokoBot {
         int newPlayerRow = playerRow + dRow[i];
         int newPlayerCol = playerCol + dCol[i];
 
-        // Check wall
+        // Check walls
         if (mapData[newPlayerRow][newPlayerCol] == '#')
           continue;
 
@@ -137,7 +137,7 @@ public class SokoBot {
           int newBoxRow = newPlayerRow + dRow[i];
           int newBoxCol = newPlayerCol + dCol[i];
 
-          // Check if box can be pushed (no wall, no other box, not deadlock)
+          // Check if box can be pushed (no obstruction)
           if (mapData[newBoxRow][newBoxCol] != '#' && getBoxIndexAt(newBoxRow, newBoxCol) == -1) {
             if (!deadSquares[newBoxRow][newBoxCol]) {
               int[][] newBoxPositions = deepCopyBoxPositions();
@@ -272,8 +272,7 @@ public class SokoBot {
    * Computes minimum pushes required for a box at each position to reach a goal
    * Result is an admissible heuristic
    */
-  private int[][] buildPatternDatabase(int height, int width, char[][] mapData,
-      List<int[]> goalPositions) {
+  private int[][] buildPatternDatabase(int height, int width, char[][] mapData, List<int[]> goalPositions) {
     int[][] pdb = new int[height][width];
     for (int[] row : pdb)
       Arrays.fill(row, Integer.MAX_VALUE);
