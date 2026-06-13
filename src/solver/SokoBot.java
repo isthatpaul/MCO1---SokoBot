@@ -8,361 +8,242 @@ import java.util.List;
 import java.util.Objects;
 import java.util.PriorityQueue;
 import java.util.Queue;
+import java.util.Random;
 import java.util.Set;
 
-/**
- * SokoBot: An efficient A* solver for Sokoban puzzles
- * 
- * Algorithm: A* search with pattern database heuristic
- * - Uses Zobrist hashing for fast state comparison
- * - Pre-computes deadlock positions
- * - Implements pattern database for admissible heuristic
- * - Generates optimal solutions
- */
+
 public class SokoBot {
-  private Zobrist zobrist;
-  private int[][] patternDatabase;
+    
+    // Core structural tables (To be initialized in solveSokobanPuzzle)
+    private Zobrist zobristHasher;
+    private int[][] patternDatabase;
 
-  /**
-   * Zobrist hashing: Fast, collision-resistant state hashing
-   * Combines player position and box positions into a single long
-   */
-  private class Zobrist {
-    private final long[][][] table;
-    private static final int PLAYER_INDEX = 0;
-    private static final int BOX_INDEX = 1;
+    // Directional control vectors matching character tokens
+    private static final int[] CARDINAL_ROW_DELTA = { -1, 1, 0, 0 };
+    private static final int[] CARDINAL_COL_DELTA = { 0, 0, -1, 1 };
+    private static final char[] DIRECTION_TOKENS = { 'u', 'd', 'l', 'r' };
 
-    public Zobrist(int height, int width) {
-      table = new long[height][width][2];
-      java.util.Random rand = new java.util.Random(12345);
-      for (int i = 0; i < height; i++) {
-        for (int j = 0; j < width; j++) {
-          table[i][j][PLAYER_INDEX] = rand.nextLong();
-          table[i][j][BOX_INDEX] = rand.nextLong();
-        }
-      }
-    }
-
-    public long computeHash(int playerRow, int playerCol, int[][] boxPositions) {
-      long hash = 0;
-      hash ^= table[playerRow][playerCol][PLAYER_INDEX];
-      for (int[] boxPos : boxPositions) {
-        hash ^= table[boxPos[0]][boxPos[1]][BOX_INDEX];
-      }
-      return hash;
-    }
-  }
-
-  /**
-   * State represents a game configuration: player position + box positions
-   * Comparable by f-cost (g + h) for A* priority queue
-   */
-  private class State implements Comparable<State> {
-    int playerRow, playerCol;
-    int[][] boxPositions;
-    State parent;
-    char move;
-    int g, h, f;
-    long zobristHash;
-    private final char[][] mapData;
-    private final List<int[]> goalPositions;
-    private final boolean[][] deadSquares;
-
-    public State(int pR, int pC, int[][] bP, char[][] mD, List<int[]> gP, boolean[][] dS) {
-      playerRow = pR;
-      playerCol = pC;
-      boxPositions = bP;
-      mapData = mD;
-      goalPositions = gP;
-      deadSquares = dS;
-      parent = null;
-      move = ' ';
-      g = 0;
-      h = calculateHeuristic();
-      f = this.g + this.h;
-
-      // Sort boxes for consistent hashing
-      Arrays.sort(this.boxPositions, (a, b) -> a[0] != b[0] ? a[0] - b[0] : a[1] - b[1]);
-      this.zobristHash = zobrist.computeHash(this.playerRow, this.playerCol, this.boxPositions);
-    }
-
-    public State(State parent, int newPR, int newPC, int[][] newBP, char m) {
-      this(newPR, newPC, newBP, parent.mapData, parent.goalPositions, parent.deadSquares);
-      this.parent = parent;
-      this.move = m;
-      this.g = parent.g + 1;
-      this.f = this.g + this.h;
-    }
+    // Constant valuation metrics for state costings
+    private static final int INF_PATH_PENALTY = 1000;
+    private static final int HEURISTIC_MULTIPLIER = 10000;
+    private static final int RANDOM_SEED_VALUE = 12345;
 
     /**
-     * Heuristic: Sum of pattern database values for each box
-     * Pattern database pre-computes minimum pushes to nearest goal
-     * This is in fact admissible
+     * Executes an A* search strategy to compute an optimal step sequence.
      */
-    private int calculateHeuristic() {
-      int totalPushDistance = 0;
+    public String solveSokobanPuzzle(int width, int height, char[][] mapData, char[][] itemsData) {
+        this.zobristHasher = new Zobrist(height, width);
 
-      for (int[] boxPos : boxPositions) {
-        int pdbVal = patternDatabase[boxPos[0]][boxPos[1]];
-        totalPushDistance += (pdbVal == Integer.MAX_VALUE) ? 1000 : pdbVal;
-      }
+        // State extraction buffers
+        int initialPlayerRow = -1;
+        int initialPlayerCol = -1;
+        List<int[]> boxPositionsList = new ArrayList<>();
+        List<int[]> goalPositions = new ArrayList<>();
 
-      // Tie-breaker: prefer states where boxes are closer to origin
-      int tieBreaker = Arrays.stream(boxPositions).mapToInt(b -> b[0] * 100 + b[1]).sum();
-
-      return totalPushDistance * 10000 + tieBreaker;
-    }
-
-    /**
-     * Generate successor states by moving player in 4 directions
-     * Only includes legal moves (not walls, no deadlocks)
-     */
-    public List<State> getSuccessors() {
-      List<State> successors = new ArrayList<>();
-      int[] dRow = { -1, 1, 0, 0 };
-      int[] dCol = { 0, 0, -1, 1 };
-      char[] moves = { 'u', 'd', 'l', 'r' };
-
-      for (int i = 0; i < 4; i++) {
-        int newPlayerRow = playerRow + dRow[i];
-        int newPlayerCol = playerCol + dCol[i];
-
-        // Check walls
-        if (mapData[newPlayerRow][newPlayerCol] == '#')
-          continue;
-
-        // Check if pushing a box
-        int boxIndex = getBoxIndexAt(newPlayerRow, newPlayerCol);
-        if (boxIndex != -1) {
-          int newBoxRow = newPlayerRow + dRow[i];
-          int newBoxCol = newPlayerCol + dCol[i];
-
-          // Check if box can be pushed (no obstruction)
-          if (mapData[newBoxRow][newBoxCol] != '#' && getBoxIndexAt(newBoxRow, newBoxCol) == -1) {
-            if (!deadSquares[newBoxRow][newBoxCol]) {
-              int[][] newBoxPositions = deepCopyBoxPositions();
-              newBoxPositions[boxIndex][0] = newBoxRow;
-              newBoxPositions[boxIndex][1] = newBoxCol;
-              successors.add(new State(this, newPlayerRow, newPlayerCol, newBoxPositions, moves[i]));
+        // Scan game grid matrices to map objects
+        for (int r = 0; r < height; r++) {
+            for (int c = 0; c < width; c++) {
+                if (itemsData[r][c] == '@') {
+                    initialPlayerRow = r;
+                    initialPlayerCol = c;
+                } else if (itemsData[r][c] == '$') {
+                    boxPositionsList.add(new int[] { r, c });
+                }
+                
+                if (mapData[r][c] == '.') {
+                    goalPositions.add(new int[] { r, c });
+                }
             }
-          }
-        } else {
-          // Simple move (no box push)
-          successors.add(new State(this, newPlayerRow, newPlayerCol, this.boxPositions, moves[i]));
         }
-      }
-      return successors;
+
+        int[][] initialBoxPositions = boxPositionsList.toArray(new int[0][]);
+
+        // Trigger Precomputations
+        boolean[][] deadSquares = precomputeDeadlocks(height, width, mapData, goalPositions);
+        this.patternDatabase = buildPatternDatabase(height, width, mapData, goalPositions);
+
+        // TODO: Initialize A* Structures (PriorityQueue, closedSet HashSet)
+        // TODO: Write Main A* loop that polls, tests for isGoalState(), and expands successors
+        
+        return "No solution found";
     }
 
     /**
-     * Check if all boxes are on goal positions
+     * Backtracks using parent node references to assemble the solution character sequence.
      */
-    public boolean isGoalState() {
-      for (int[] boxPos : boxPositions) {
-        boolean onGoal = false;
-        for (int[] goalPos : goalPositions) {
-          if (boxPos[0] == goalPos[0] && boxPos[1] == goalPos[1]) {
-            onGoal = true;
-            break;
-          }
+    private String reconstructPath(State traceNode) {
+        // TODO: Loop through traceNode.parent until null and reverse the string
+        return "";
+    }
+
+    private class State implements Comparable<State> {
+        private final int playerRow, playerCol;
+        private final int[][] boxPositions;
+        private final State parent;
+        private final char move;
+        
+        private final int g, h, f;
+        private final long zobristHash;
+        
+        private final char[][] mapData;
+        private final List<int[]> goalPositions;
+        private final boolean[][] deadSquares;
+
+        /** Root Node Constructor */
+        public State(int pR, int pC, int[][] bP, char[][] mD, List<int[]> gP, boolean[][] dS) {
+            this.playerRow = pR;
+            this.playerCol = pC;
+            this.boxPositions = bP;
+            this.mapData = mD;
+            this.goalPositions = gP;
+            this.deadSquares = dS;
+            this.parent = null;
+            this.move = ' ';
+            this.g = 0;
+            
+            // TODO: Call computePatternDatabaseHeuristic() to assign this.h
+            this.h = 0; 
+            this.f = this.g + this.h;
+
+            // TODO: Add Sorting rule for boxPositions array and call zobristHasher to get hash
+            this.zobristHash = 0;
         }
-        if (!onGoal)
-          return false;
-      }
-      return true;
-    }
 
-    private int getBoxIndexAt(int row, int col) {
-      for (int i = 0; i < boxPositions.length; i++) {
-        if (boxPositions[i][0] == row && boxPositions[i][1] == col)
-          return i;
-      }
-      return -1;
-    }
+        /** Successor Node Constructor */
+        public State(State parent, int newPR, int newPC, int[][] newBP, char stepMove) {
+            this.mapData = parent.mapData;
+            this.goalPositions = parent.goalPositions;
+            this.deadSquares = parent.deadSquares;
+            this.parent = parent;
+            this.move = stepMove;
+            this.playerRow = newPR;
+            this.playerCol = newPC;
+            this.boxPositions = newBP;
+            this.g = parent.g + 1;
+            
+            // TODO: Call computePatternDatabaseHeuristic() to assign this.h
+            this.h = 0;
+            this.f = this.g + this.h;
 
-    private int[][] deepCopyBoxPositions() {
-      int[][] newBoxPositions = new int[boxPositions.length][2];
-      for (int i = 0; i < boxPositions.length; i++) {
-        newBoxPositions[i][0] = boxPositions[i][0];
-        newBoxPositions[i][1] = boxPositions[i][1];
-      }
-      return newBoxPositions;
-    }
-
-    @Override
-    public int compareTo(State other) {
-      return Integer.compare(this.f, other.f);
-    }
-
-    @Override
-    public boolean equals(Object o) {
-      return o instanceof State && this.zobristHash == ((State) o).zobristHash;
-    }
-
-    @Override
-    public int hashCode() {
-      return Objects.hash(zobristHash);
-    }
-  }
-
-  /**
-   * Main solver: A* search algorithm
-   * 
-   * @param width   Map width
-   * @param height  Map height
-   * @param mapData Map structure (walls, goals)
-   * @param itemsData Current items (player, boxes)
-   * @return Move sequence as string (u/d/l/r)
-   */
-  public String solveSokobanPuzzle(int width, int height, char[][] mapData, char[][] itemsData) {
-    this.zobrist = new Zobrist(height, width);
-
-    // Extract initial state
-    int playerRow = -1, playerCol = -1;
-    List<int[]> boxPositionsList = new ArrayList<>();
-    List<int[]> goalPositions = new ArrayList<>();
-
-    for (int r = 0; r < height; r++) {
-      for (int c = 0; c < width; c++) {
-        if (itemsData[r][c] == '@') {
-          playerRow = r;
-          playerCol = c;
-        } else if (itemsData[r][c] == '$') {
-          boxPositionsList.add(new int[] { r, c });
+            // TODO: Add Sorting rule for boxPositions array and call zobristHasher to get hash
+            this.zobristHash = 0;
         }
-        if (mapData[r][c] == '.') {
-          goalPositions.add(new int[] { r, c });
+
+        /**
+         * Computes the distance score based on individual box targets in the Pattern Database.
+         */
+        private int computePatternDatabaseHeuristic() {
+            int totalPushDistance = 0;
+
+            // TODO: Loop through this.boxPositions, lookup value in patternDatabase, apply INF_PATH_PENALTY if needed
+            // TODO: Write streams/loops tie-breaker score (b[0] * 100 + b[1])
+            // TODO: Return (totalPushDistance * HEURISTIC_MULTIPLIER) + tieBreakerScore;
+
+            return 0;
         }
-      }
-    }
 
-    int[][] boxPositions = boxPositionsList.toArray(new int[0][]);
+        /**
+         * Scans and verifies possible move directions.
+         */
+        public List<State> generateSuccessors() {
+            List<State> generatedNodes = new ArrayList<>();
 
-    // Pre-compute deadlock positions and pattern database
-    boolean[][] deadSquares = precomputeDeadlocks(height, width, mapData, goalPositions);
-    this.patternDatabase = buildPatternDatabase(height, width, mapData, goalPositions);
+            // TODO: Loop 4 times using CARDINAL_ROW_DELTA and CARDINAL_COL_DELTA
+            // TODO: Add boundaries validation rules: isValidPlayerMove(), and box interactions using isValidBoxPush()
+            // TODO: Use replicateBoxPositions() to clone box coordinates matrix for a push state
 
-    // A* Search
-    State initialState = new State(playerRow, playerCol, boxPositions, mapData, goalPositions, deadSquares);
-    PriorityQueue<State> openSet = new PriorityQueue<>();
-    Set<Long> closedSet = new HashSet<>();
-
-    openSet.add(initialState);
-    closedSet.add(initialState.zobristHash);
-
-    while (!openSet.isEmpty()) {
-      State currentState = openSet.poll();
-
-      if (currentState.isGoalState()) {
-        return reconstructPath(currentState);
-      }
-
-      for (State successor : currentState.getSuccessors()) {
-        if (closedSet.add(successor.zobristHash)) {
-          openSet.add(successor);
+            return generatedNodes;
         }
-      }
-    }
 
-    return "No solution found";
-  }
-
-  /**
-   * Build Pattern Database: BFS from all goal positions backward
-   * Computes minimum pushes required for a box at each position to reach a goal
-   * Result is an admissible heuristic
-   */
-  private int[][] buildPatternDatabase(int height, int width, char[][] mapData, List<int[]> goalPositions) {
-    int[][] pdb = new int[height][width];
-    for (int[] row : pdb)
-      Arrays.fill(row, Integer.MAX_VALUE);
-
-    Queue<int[]> queue = new LinkedList<>();
-
-    // Start BFS from all goal positions
-    for (int[] goal : goalPositions) {
-      pdb[goal[0]][goal[1]] = 0;
-      queue.add(new int[] { goal[0], goal[1] });
-    }
-
-    int[] dRow = { -1, 1, 0, 0 };
-    int[] dCol = { 0, 0, -1, 1 };
-
-    while (!queue.isEmpty()) {
-      int[] curr = queue.poll();
-
-      // Consider all directions a box could have been pushed FROM
-      for (int i = 0; i < 4; i++) {
-        int prevBoxR = curr[0] - dRow[i];
-        int prevBoxC = curr[1] - dCol[i];
-        int pushFromR = curr[0] + dRow[i];
-        int pushFromC = curr[1] + dCol[i];
-
-        // Valid if box can exist at prevBox position and player can stand at pushFrom
-        if (prevBoxR > 0 && prevBoxR < height - 1 && prevBoxC > 0 && prevBoxC < width - 1
-            && mapData[prevBoxR][prevBoxC] != '#' && mapData[pushFromR][pushFromC] != '#') {
-          if (pdb[prevBoxR][prevBoxC] > pdb[curr[0]][curr[1]] + 1) {
-            pdb[prevBoxR][prevBoxC] = pdb[curr[0]][curr[1]] + 1;
-            queue.add(new int[] { prevBoxR, prevBoxC });
-          }
+        private boolean isValidPlayerMove(int r, int c) {
+            // TODO: Return false if target is a wall ('#')
+            return true;
         }
-      }
-    }
 
-    return pdb;
-  }
-
-  /**
-   * Pre-compute deadlock positions (corners where boxes can get stuck)
-   * Boxes pushed into these positions can never be recovered
-   */
-  private boolean[][] precomputeDeadlocks(int height, int width, char[][] mapData,
-      List<int[]> goalPositions) {
-    boolean[][] deadSquares = new boolean[height][width];
-
-    for (int r = 1; r < height - 1; r++) {
-      for (int c = 1; c < width - 1; c++) {
-        if (mapData[r][c] == '#')
-          continue;
-
-        // Skip if this is a goal position
-        boolean isGoal = false;
-        for (int[] goalPos : goalPositions) {
-          if (goalPos[0] == r && goalPos[1] == c) {
-            isGoal = true;
-            break;
-          }
+        private boolean isValidBoxPush(int r, int c) {
+            // TODO: Check if path is clear of walls and other boxes, ensure square is not on deadSquares
+            return true;
         }
-        if (isGoal)
-          continue;
 
-        // Detect corners: walls on both sides
-        boolean wallUp = mapData[r - 1][c] == '#';
-        boolean wallDown = mapData[r + 1][c] == '#';
-        boolean wallLeft = mapData[r][c - 1] == '#';
-        boolean wallRight = mapData[r][c + 1] == '#';
-
-        if ((wallUp || wallDown) && (wallLeft || wallRight)) {
-          deadSquares[r][c] = true;
+        private int getBoxIndexAtCoordinates(int row, int col) {
+            for (int i = 0; i < this.boxPositions.length; i++) {
+                if (this.boxPositions[i][0] == row && this.boxPositions[i][1] == col) return i;
+            }
+            return -1;
         }
-      }
+
+        private int[][] replicateBoxPositions() {
+            int[][] clonedPositions = new int[this.boxPositions.length][2];
+            for (int i = 0; i < this.boxPositions.length; i++) {
+                clonedPositions[i][0] = this.boxPositions[i][0];
+                clonedPositions[i][1] = this.boxPositions[i][1];
+            }
+            return clonedPositions;
+        }
+
+        public boolean isGoalState() {
+            // TODO: Loop through boxPositions to verify every single box matches a goal index pair
+            return false;
+        }
+
+        @Override
+        public int compareTo(State outsideNode) {
+            return Integer.compare(this.f, outsideNode.f);
+        }
+
+        @Override
+        public boolean equals(Object comparisonObject) {
+            return (comparisonObject instanceof State) && 
+                   (this.zobristHash == ((State) comparisonObject).zobristHash);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(this.zobristHash);
+        }
     }
 
-    return deadSquares;
-  }
+    private class Zobrist {
+        private final long[][][] randomBitboardTable;
+        private static final int MATRIX_PLAYER_LAYER = 0;
+        private static final int MATRIX_BOX_LAYER = 1;
 
-  /**
-   * Reconstruct the solution path by backtracking from goal state to initial state
-   */
-  private String reconstructPath(State goalState) {
-    StringBuilder path = new StringBuilder();
-    State currentState = goalState;
+        public Zobrist(int gridHeight, int gridWidth) {
+            this.randomBitboardTable = new long[gridHeight][gridWidth][2];
+            // TODO: Create a Random instance with RANDOM_SEED_VALUE, fill out the layers with nextLong()
+        }
 
-    while (currentState.parent != null) {
-      path.append(currentState.move);
-      currentState = currentState.parent;
+        public long computeHash(int pRow, int pCol, int[][] activeBoxPositions) {
+            long uniqueStateHash = 0;
+            // TODO: Apply XOR operations with table entries matching player and active boxes
+            return uniqueStateHash;
+        }
     }
 
-    return path.reverse().toString();
-  }
+    /**
+     * Runs a backward-BFS routine radiating outward from target goals.
+     */
+    private int[][] buildPatternDatabase(int height, int width, char[][] mapData, List<int[]> goalPositions) {
+        int[][] databaseMap = new int[height][width];
+        for (int[] row : databaseMap) {
+            Arrays.fill(row, Integer.MAX_VALUE);
+        }
+
+        // TODO: Set goal layouts map values to 0, queue them up in a processing Queue
+        // TODO: Write backward Multi-Source BFS while queue isn't empty using deltas to store travel steps
+
+        return databaseMap;
+    }
+
+    /**
+     * Statically maps out trapped corner coordinates during game initialization.
+     */
+    private boolean[][] precomputeDeadlocks(int height, int width, char[][] mapData, List<int[]> goalPositions) {
+        boolean[][] deadSquareMappingTable = new boolean[height][width];
+
+        // TODO: Loop through maps tiles (ignoring outer borders and active goals)
+        // TODO: If a tile forms a non-goal corner bounded by adjacent walls, set deadSquareMappingTable flag to true
+
+        return deadSquareMappingTable;
+    }
 }
