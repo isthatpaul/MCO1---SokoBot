@@ -99,7 +99,8 @@ public class SokoBot {
      * Pattern database pre-computes minimum pushes to nearest goal
      * This is in fact admissible
      */
-    private int calculateHeuristic() {
+    //the original one
+    /* private int calculateHeuristic() {
       int totalPushDistance = 0;
 
       for (int[] boxPos : boxPositions) {
@@ -111,6 +112,22 @@ public class SokoBot {
       int tieBreaker = Arrays.stream(boxPositions).mapToInt(b -> b[0] * 100 + b[1]).sum();
 
       return totalPushDistance * 10000 + tieBreaker;
+    } */
+    //new one
+    private int calculateHeuristic() {
+      int totalDist = 0;
+      for (int[] boxPos : boxPositions) {
+        int minGoalDist = Integer.MAX_VALUE;
+        for (int[] goalPos : goalPositions) {
+          // manhattan distance (admissible heuristic)
+          int dist = Math.abs(boxPos[0] - goalPos[0]) + Math.abs(boxPos[1] - goalPos[1]);
+          if (dist < minGoalDist) minGoalDist = dist;
+        }
+        totalDist += minGoalDist;
+      }
+      // tie breaker to prioritize states that are closer to the top left of the board
+      int tieBreaker = Arrays.stream(boxPositions).mapToInt(b -> b[0] * 100 + b[1]).sum();
+      return totalDist * 10000 + tieBreaker;
     }
 
     /**
@@ -250,7 +267,13 @@ public class SokoBot {
     openSet.add(initialState);
     closedSet.add(initialState.zobristHash);
 
+    long startTime = System.currentTimeMillis(); // for time
+
     while (!openSet.isEmpty()) {
+      // 15 second time limit
+      if (System.currentTimeMillis() - startTime > 14500) {
+        return ""; // stop searching and return empty string, timeout
+      }
       State currentState = openSet.poll();
 
       if (currentState.isGoalState()) {
